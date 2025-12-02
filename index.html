@@ -1,0 +1,336 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>念佛计数器 - 初始值改进版</title>
+    <style>
+        /* CSS 样式保持不变 */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+            color: #333;
+            touch-action: manipulation;
+        }
+        h1 {
+            font-weight: 300;
+            color: #1c1c1e;
+            margin: 10px 0;
+        }
+        #count-display {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-weight: 200;
+            color: #007aff;
+            margin: 10px 0 20px 0;
+            min-width: 280px;
+            text-align: center;
+            line-height: 1.1;
+            padding: 10px;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+        #count-thousands {
+            font-size: 5rem;
+            color: #8e8e93;
+            letter-spacing: 0.03em;
+        }
+        #count-units {
+            font-size: 7rem;
+            letter-spacing: 0.03em;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            padding: 20px;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            width: 85%;
+            max-width: 400px;
+        }
+        .button-group {
+            display: flex;
+            width: 100%;
+            gap: 10px;
+        }
+        .button-group button {
+            font-size: 1.1rem;
+            padding: 15px 0;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            flex-grow: 1;
+        }
+        #start-stop-btn {
+            background-color: #007aff;
+            color: white;
+        }
+        #start-stop-btn.stop {
+            background-color: #ff9500;
+        }
+        #reset-btn {
+            background-color: #ff3b30;
+            color: white;
+            flex-grow: 0.5;
+        }
+        .slider-container {
+            width: 100%;
+            text-align: center;
+        }
+        label {
+            font-size: 1rem;
+            color: #6c6c72;
+            display: block;
+            margin-bottom: 5px;
+        }
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+        }
+        .slider-value {
+            font-size: 1.1rem;
+            font-weight: 500;
+            color: #007aff;
+        }
+        #status {
+            margin-top: 15px;
+            font-size: 0.9rem;
+            color: #8e8e93;
+            height: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>念佛计数器</h1>
+    <div id="count-display">
+        <div id="count-thousands">000</div>
+        <div id="count-units">000</div>
+    </div>
+    <div class="controls">
+        <div class="button-group">
+            <button id="start-stop-btn">开始监听</button>
+            <button id="reset-btn">复位</button>
+        </div>
+        <div class="slider-container">
+            <label for="threshold-slider">音量阈值: <span id="threshold-value" class="slider-value">23</span>%</label>
+            <input type="range" id="threshold-slider" min="1" max="100" value="23">
+        </div>
+        <div class="slider-container">
+            <label for="cooldown-slider">冷却时间: <span id="cooldown-value" class="slider-value">700</span> ms</label>
+            <input type="range" id="cooldown-slider" min="200" max="1200" value="700" step="100">
+        </div>
+    </div>
+    <p id="status">请点击"开始"并授权使用麦克风</p>
+
+    <script>
+        // 获取 DOM 元素
+        const countThousands = document.getElementById('count-thousands');
+        const countUnits = document.getElementById('count-units');
+        const startStopBtn = document.getElementById('start-stop-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const thresholdSlider = document.getElementById('threshold-slider');
+        const thresholdValue = document.getElementById('threshold-value');
+        const cooldownSlider = document.getElementById('cooldown-slider');
+        const cooldownValue = document.getElementById('cooldown-value');
+        const statusDisplay = document.getElementById('status');
+        
+        // Web Audio API 变量
+        let audioContext;
+        let analyser;
+        let mediaStreamSource;
+        let dataArray;
+        let rafId; 
+
+        let wakeLock = null; 
+
+        // 状态变量
+        let count = parseInt(localStorage.getItem('clapCount') || '0', 10);
+        let isMonitoring = false;
+        let isAboveThreshold = false;
+        let isOnCooldown = false;
+
+        // --- 初始化 ---
+
+        function updateDisplay(currentCount) {
+            const thousands = Math.floor(currentCount / 1000);
+            const units = currentCount % 1000;
+            countThousands.textContent = String(thousands).padStart(3, '0');
+            countUnits.textContent = String(units).padStart(3, '0');
+        }
+
+        updateDisplay(count);
+
+        // --- 事件监听 ---
+
+        thresholdSlider.addEventListener('input', () => {
+            thresholdValue.textContent = thresholdSlider.value;
+        });
+        cooldownSlider.addEventListener('input', () => {
+            cooldownValue.textContent = cooldownSlider.value;
+        });
+
+        // 复位按钮 (清零并清除 localStorage)
+        resetBtn.addEventListener('click', () => {
+            count = 0;
+            localStorage.setItem('clapCount', '0'); 
+            updateDisplay(count);
+            
+            if (!isMonitoring) {
+                startStopBtn.textContent = '开始监听';
+                startStopBtn.classList.remove('stop');
+            }
+            statusDisplay.textContent = '计数已清零。';
+        });
+
+        startStopBtn.addEventListener('click', () => {
+            if (isMonitoring) {
+                stopMonitoring(); 
+            } else {
+                startMonitoring(); 
+            }
+        });
+
+        // --- 核心功能 ---
+        
+        // 封装 Wake Lock 请求
+        async function requestWakeLock() {
+            if (navigator.wakeLock) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    statusDisplay.textContent = '正在监听... (屏幕常亮)';
+                } catch (err) {
+                    statusDisplay.textContent = '正在监听... (无Wake Lock)';
+                }
+            } else {
+                statusDisplay.textContent = '正在监听...';
+            }
+        }
+        
+        // 封装 Wake Lock 释放
+        function releaseWakeLock() {
+             if (wakeLock) {
+                wakeLock.release();
+                wakeLock = null;
+            }
+        }
+
+        // 开始/继续 监听
+        async function startMonitoring() {
+            try {
+                if (!audioContext || audioContext.state === 'closed') {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    
+                    statusDisplay.textContent = '正在请求麦克风权限...';
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    mediaStreamSource = audioContext.createMediaStreamSource(stream);
+                    analyser = audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    const bufferLength = analyser.frequencyBinCount;
+                    dataArray = new Uint8Array(bufferLength);
+                    mediaStreamSource.connect(analyser);
+                }
+                
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+
+                requestWakeLock();
+
+                isMonitoring = true;
+                startStopBtn.textContent = '暂停';
+                startStopBtn.classList.add('stop');
+                
+                thresholdSlider.disabled = true;
+                cooldownSlider.disabled = true;
+                resetBtn.disabled = true;
+
+                isAboveThreshold = false;
+                isOnCooldown = false;
+
+                detectClap();
+
+            } catch (err) {
+                console.error('无法访问麦克风:', err);
+                statusDisplay.textContent = '错误：无法访问麦克风。请检查权限。';
+                if (window.location.protocol !== 'https:') {
+                     statusDisplay.textContent = '错误：必须在 HTTPS 网站上运行。';
+                }
+            }
+        }
+
+        // 暂停监听
+        function stopMonitoring() {
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+
+            releaseWakeLock();
+
+            isMonitoring = false;
+            statusDisplay.textContent = '已暂停。';
+            startStopBtn.textContent = '继续';
+            startStopBtn.classList.remove('stop');
+
+            thresholdSlider.disabled = false;
+            cooldownSlider.disabled = false;
+            resetBtn.disabled = false;
+        }
+
+        // 检测循环
+        function detectClap() {
+            if (!analyser) {
+                return;
+            }
+            
+            analyser.getByteTimeDomainData(dataArray);
+
+            let maxAmplitude = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                const amplitude = Math.abs(dataArray[i] - 128);
+                if (amplitude > maxAmplitude) {
+                    maxAmplitude = amplitude;
+                }
+            }
+
+            const currentVolumePercent = (maxAmplitude / 128) * 100;
+            // 注意：这里读取的是当前滑块的值，不是硬编码的初始值
+            const userThreshold = parseInt(thresholdSlider.value, 10); 
+            const cooldownTime = parseInt(cooldownSlider.value, 10);
+
+            if (currentVolumePercent > userThreshold && !isAboveThreshold && !isOnCooldown) {
+                count++;
+                localStorage.setItem('clapCount', count);
+                updateDisplay(count);
+                
+                isAboveThreshold = true;
+                isOnCooldown = true;
+
+                setTimeout(() => {
+                    isOnCooldown = false;
+                }, cooldownTime);
+            } 
+            else if (currentVolumePercent <= userThreshold) {
+                isAboveThreshold = false;
+            }
+            
+            if (isMonitoring) {
+                rafId = requestAnimationFrame(detectClap);
+            }
+        }
+    </script>
+</body>
+</html>
