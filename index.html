@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>念佛计数器 - 持续运行版</title>
+    <title>念佛计数器 - 保持屏幕常亮版</title>
     <style>
         /* CSS 样式保持不变 */
         body {
@@ -114,7 +114,7 @@
 </head>
 <body>
 
-    <h1>念佛计数器</h1>
+    <h1>击掌计数器</h1>
     <div id="count-display">
         <div id="count-thousands">000</div>
         <div id="count-units">000</div>
@@ -152,9 +152,10 @@
         let analyser;
         let mediaStreamSource;
         let dataArray;
-        let intervalId; // 恢复使用 setInterval ID
-        let silentOscillator = null; // 恢复使用静音振荡器
+        let intervalId; 
+        let silentOscillator = null; 
 
+        // 核心变量：用于屏幕常亮的 Wake Lock 对象
         let wakeLock = null; 
 
         // 状态变量
@@ -174,9 +175,37 @@
 
         updateDisplay(count);
 
-        // --- 核心监听器 ---
+        // --- 屏幕常亮逻辑 (Wake Lock API) ---
+        
+        // 【核心改进点】请求屏幕常亮
+        async function requestWakeLock() {
+            if (navigator.wakeLock) {
+                try {
+                    // 请求 'screen' Wake Lock，防止屏幕自动休眠
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    statusDisplay.textContent = '正在监听... (屏幕常亮)';
+                    console.log('Wake Lock 已激活');
+                } catch (err) {
+                    statusDisplay.textContent = '正在监听... (常亮请求失败)';
+                    console.warn('Wake Lock 失败:', err.message);
+                }
+            } else {
+                statusDisplay.textContent = '正在监听... (当前浏览器不支持常亮)';
+            }
+        }
+        
+        // 【核心改进点】释放屏幕常亮
+        function releaseWakeLock() {
+             if (wakeLock) {
+                wakeLock.release();
+                wakeLock = null;
+                console.log('Wake Lock 已释放');
+            }
+        }
 
-        // 监听页面可见性变化，用于在后台被挂起后恢复 AudioContext
+        // --- 页面可见性监听 ---
+
+        // 用于处理从后台切回前台时，恢复 AudioContext 和 Wake Lock
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
                 if (isMonitoring && audioContext && audioContext.state === 'suspended') {
@@ -184,13 +213,13 @@
                         console.log('AudioContext 已从挂起状态恢复。');
                     });
                 }
-                // 重新请求 Wake Lock (如果之前被释放)
+                // 亮屏时，如果正在计数，重新请求 Wake Lock
                 if (isMonitoring && !wakeLock) {
                     requestWakeLock();
                 }
             } 
             else if (document.visibilityState === 'hidden') {
-                // 页面转入后台时释放 Wake Lock，让系统管理省电
+                // 进入后台时释放 Wake Lock，让系统管理省电
                 releaseWakeLock();
             }
         });
@@ -227,26 +256,6 @@
         });
 
         // --- 核心功能函数 ---
-        
-        async function requestWakeLock() {
-            if (navigator.wakeLock) {
-                try {
-                    wakeLock = await navigator.wakeLock.request('screen');
-                    statusDisplay.textContent = '正在监听... (屏幕常亮)';
-                } catch (err) {
-                    statusDisplay.textContent = '正在监听... (无Wake Lock)';
-                }
-            } else {
-                statusDisplay.textContent = '正在监听...';
-            }
-        }
-        
-        function releaseWakeLock() {
-             if (wakeLock) {
-                wakeLock.release();
-                wakeLock = null;
-            }
-        }
 
         // 开始/继续 监听
         async function startMonitoring() {
@@ -263,22 +272,22 @@
                     dataArray = new Uint8Array(bufferLength);
                     mediaStreamSource.connect(analyser);
 
-                    // 重新创建静音振荡器，保持 AudioContext 持续运行
+                    // 创建静音振荡器，保持 AudioContext 持续运行
                     if (!silentOscillator) {
                         silentOscillator = audioContext.createOscillator();
                         const gain = audioContext.createGain();
-                        gain.gain.setValueAtTime(0, audioContext.currentTime); // 设为静音
+                        gain.gain.setValueAtTime(0, audioContext.currentTime);
                         silentOscillator.connect(gain);
                         gain.connect(audioContext.destination);
                         silentOscillator.start();
                     }
                 }
                 
-                // 尝试恢复被挂起的状态
                 if (audioContext.state === 'suspended') {
                     await audioContext.resume();
                 }
 
+                // 【关键同步点】开始监听时，请求屏幕常亮
                 requestWakeLock();
 
                 isMonitoring = true;
@@ -294,9 +303,7 @@
 
                 // 重新使用 setInterval 启动检测循环
                 if (intervalId) clearInterval(intervalId);
-                intervalId = setInterval(detectClap, 50); // 每50ms检测一次
-                console.log('检测循环已启动 (setInterval)');
-
+                intervalId = setInterval(detectClap, 50);
 
             } catch (err) {
                 console.error('无法访问麦克风:', err);
@@ -315,10 +322,10 @@
                 intervalId = null;
             }
 
-            // 释放 Wake Lock
+            // 【关键同步点】暂停监听时，释放屏幕常亮
             releaseWakeLock();
 
-            // 状态更新 (不清零计数)
+            // 状态更新
             isMonitoring = false;
             statusDisplay.textContent = '已暂停。';
             startStopBtn.textContent = '继续';
@@ -329,12 +336,11 @@
             cooldownSlider.disabled = false;
             resetBtn.disabled = false;
             
-            // 重要：我们不关闭 audioContext 或停止振荡器，以便后台计数能够继续
+            // AudioContext 和振荡器保持运行，允许后台计数尝试继续
         }
 
-        // 检测循环 (由 setInterval 调用)
+        // 检测循环
         function detectClap() {
-            // 如果 AudioContext 被挂起，则跳过检测（虽然 setInterval 仍在运行，但 analyser 无法获取数据）
             if (!analyser || (audioContext && audioContext.state === 'suspended')) {
                 return;
             }
@@ -354,10 +360,9 @@
             const cooldownTime = parseInt(cooldownSlider.value, 10);
 
             if (currentVolumePercent > userThreshold && !isAboveThreshold && !isOnCooldown) {
-                // --- 念佛! ---
+                // --- 击掌! ---
                 count++;
                 localStorage.setItem('clapCount', count);
-                // 即使在后台，也要更新显示，亮屏时会立即更新
                 updateDisplay(count);
                 
                 isAboveThreshold = true;
