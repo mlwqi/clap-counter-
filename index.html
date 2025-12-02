@@ -1,9 +1,9 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>念佛计数器 - 初始值改进版</title>
+    <title>念佛计数器 - 持续运行版</title>
     <style>
         /* CSS 样式保持不变 */
         body {
@@ -152,7 +152,8 @@
         let analyser;
         let mediaStreamSource;
         let dataArray;
-        let rafId; 
+        let intervalId; // 恢复使用 setInterval ID
+        let silentOscillator = null; // 恢复使用静音振荡器
 
         let wakeLock = null; 
 
@@ -173,7 +174,29 @@
 
         updateDisplay(count);
 
-        // --- 事件监听 ---
+        // --- 核心监听器 ---
+
+        // 监听页面可见性变化，用于在后台被挂起后恢复 AudioContext
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                if (isMonitoring && audioContext && audioContext.state === 'suspended') {
+                    audioContext.resume().then(() => {
+                        console.log('AudioContext 已从挂起状态恢复。');
+                    });
+                }
+                // 重新请求 Wake Lock (如果之前被释放)
+                if (isMonitoring && !wakeLock) {
+                    requestWakeLock();
+                }
+            } 
+            else if (document.visibilityState === 'hidden') {
+                // 页面转入后台时释放 Wake Lock，让系统管理省电
+                releaseWakeLock();
+            }
+        });
+
+
+        // --- UI 事件 ---
 
         thresholdSlider.addEventListener('input', () => {
             thresholdValue.textContent = thresholdSlider.value;
@@ -203,9 +226,8 @@
             }
         });
 
-        // --- 核心功能 ---
+        // --- 核心功能函数 ---
         
-        // 封装 Wake Lock 请求
         async function requestWakeLock() {
             if (navigator.wakeLock) {
                 try {
@@ -219,7 +241,6 @@
             }
         }
         
-        // 封装 Wake Lock 释放
         function releaseWakeLock() {
              if (wakeLock) {
                 wakeLock.release();
@@ -241,8 +262,19 @@
                     const bufferLength = analyser.frequencyBinCount;
                     dataArray = new Uint8Array(bufferLength);
                     mediaStreamSource.connect(analyser);
+
+                    // 重新创建静音振荡器，保持 AudioContext 持续运行
+                    if (!silentOscillator) {
+                        silentOscillator = audioContext.createOscillator();
+                        const gain = audioContext.createGain();
+                        gain.gain.setValueAtTime(0, audioContext.currentTime); // 设为静音
+                        silentOscillator.connect(gain);
+                        gain.connect(audioContext.destination);
+                        silentOscillator.start();
+                    }
                 }
                 
+                // 尝试恢复被挂起的状态
                 if (audioContext.state === 'suspended') {
                     await audioContext.resume();
                 }
@@ -260,7 +292,11 @@
                 isAboveThreshold = false;
                 isOnCooldown = false;
 
-                detectClap();
+                // 重新使用 setInterval 启动检测循环
+                if (intervalId) clearInterval(intervalId);
+                intervalId = setInterval(detectClap, 50); // 每50ms检测一次
+                console.log('检测循环已启动 (setInterval)');
+
 
             } catch (err) {
                 console.error('无法访问麦克风:', err);
@@ -273,26 +309,33 @@
 
         // 暂停监听
         function stopMonitoring() {
-            if (rafId) {
-                cancelAnimationFrame(rafId);
-                rafId = null;
+            // 停止 setInterval 循环
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
             }
 
+            // 释放 Wake Lock
             releaseWakeLock();
 
+            // 状态更新 (不清零计数)
             isMonitoring = false;
             statusDisplay.textContent = '已暂停。';
             startStopBtn.textContent = '继续';
             startStopBtn.classList.remove('stop');
 
+            // 停止时允许调节
             thresholdSlider.disabled = false;
             cooldownSlider.disabled = false;
             resetBtn.disabled = false;
+            
+            // 重要：我们不关闭 audioContext 或停止振荡器，以便后台计数能够继续
         }
 
-        // 检测循环
+        // 检测循环 (由 setInterval 调用)
         function detectClap() {
-            if (!analyser) {
+            // 如果 AudioContext 被挂起，则跳过检测（虽然 setInterval 仍在运行，但 analyser 无法获取数据）
+            if (!analyser || (audioContext && audioContext.state === 'suspended')) {
                 return;
             }
             
@@ -307,13 +350,14 @@
             }
 
             const currentVolumePercent = (maxAmplitude / 128) * 100;
-            // 注意：这里读取的是当前滑块的值，不是硬编码的初始值
-            const userThreshold = parseInt(thresholdSlider.value, 10); 
+            const userThreshold = parseInt(thresholdSlider.value, 10);
             const cooldownTime = parseInt(cooldownSlider.value, 10);
 
             if (currentVolumePercent > userThreshold && !isAboveThreshold && !isOnCooldown) {
+                // --- 念佛! ---
                 count++;
                 localStorage.setItem('clapCount', count);
+                // 即使在后台，也要更新显示，亮屏时会立即更新
                 updateDisplay(count);
                 
                 isAboveThreshold = true;
@@ -325,10 +369,6 @@
             } 
             else if (currentVolumePercent <= userThreshold) {
                 isAboveThreshold = false;
-            }
-            
-            if (isMonitoring) {
-                rafId = requestAnimationFrame(detectClap);
             }
         }
     </script>
